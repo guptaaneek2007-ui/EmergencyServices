@@ -109,8 +109,7 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data)
 int main()
 {
     conn = mysql_init(NULL);
-
-    /* Railway MySQL connection */
+    mysql_options(conn,MYSQL_OPT_CONNECT_TIMEOUT,"5");
     const char *host = getenv("MYSQLHOST");
     const char *user = getenv("MYSQLUSER");
     const char *password = getenv("Aneek@28");

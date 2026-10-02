@@ -1,5 +1,12 @@
 #include <stdio.h>
+#include <stdio.h>
+
+#ifdef _WIN32
 #include <mysql.h>
+#else
+#include <mysql/mysql.h>
+#endif
+
 #include "mongoose.h"
 
 MYSQL *conn;

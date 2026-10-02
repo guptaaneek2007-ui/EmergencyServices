@@ -137,7 +137,7 @@ int main()
     struct mg_mgr mgr;
 
     mg_mgr_init(&mgr);
-    const char *port = getenv("PORT");
+    const char *railway_port = getenv("PORT");
 
 char address[100];
 
@@ -145,7 +145,7 @@ snprintf(
     address,
     sizeof(address),
     "http://0.0.0.0:%s",
-    port ? port : "8080"
+     railway_port ? railway_port : "8080"
 );
 
 mg_http_listen(

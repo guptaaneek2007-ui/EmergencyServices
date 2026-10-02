@@ -1,0 +1,15 @@
+#include<stdio.h>
+#include<raylib.h>
+int main()
+{
+    initwindow(800,500,"Circle");
+    while(!WindowShouldClose() )
+    {
+        BeginDrawing();
+        ClearBackground(RAYWHITE);
+        DrawCircle(200,200,50,RED);
+        EndDrawing();
+    }
+    CloseWindow();
+    return 0;
+}

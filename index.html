@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+```
+<title>EmergencyServices</title>
+
+<style>
+    * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+        font-family: Arial, Helvetica, sans-serif;
+    }
+
+    body {
+        background: #f4f6f8;
+        color: #222;
+    }
+
+    /* Header */
+    header {
+        background: #c62828;
+        color: white;
+        padding: 22px 8%;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        box-shadow: 0 3px 10px rgba(0,0,0,0.15);
+    }
+
+    .logo {
+        font-size: 28px;
+        font-weight: bold;
+    }
+
+    .tagline {
+        font-size: 14px;
+        opacity: 0.9;
+    }
+
+    /* Hero */
+    .hero {
+        text-align: center;
+        padding: 55px 20px 35px;
+    }
+
+    .hero h1 {
+        font-size: 42px;
+        color: #b71c1c;
+        margin-bottom: 12px;
+    }
+
+    .hero p {
+        font-size: 17px;
+        color: #666;
+    }
+
+    /* Search Card */
+    .search-card {
+        width: 90%;
+        max-width: 650px;
+        margin: 20px auto 50px;
+        background: white;
+        padding: 35px;
+        border-radius: 16px;
+        box-shadow: 0 6px 25px rgba(0,0,0,0.12);
+    }
+
+    .search-card h2 {
+        text-align: center;
+        margin-bottom: 25px;
+        color: #333;
+    }
+
+    .form-group {
+        margin-bottom: 20px;
+    }
+
+    .form-group label {
+        display: block;
+        margin-bottom: 8px;
+        font-weight: bold;
+        color: #444;
+    }
+
+    input,
+    select {
+        width: 100%;
+        padding: 14px;
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        font-size: 16px;
+        outline: none;
+    }
+
+    input:focus,
+    select:focus {
+        border-color: #c62828;
+    }
+
+    .search-btn {
+        width: 100%;
+        padding: 15px;
+        border: none;
+        border-radius: 8px;
+        background: #c62828;
+        color: white;
+        font-size: 17px;
+        font-weight: bold;
+        cursor: pointer;
+    }
+
+    .search-btn:hover {
+        background: #a91f1f;
+    }
+
+    /* Information Section */
+    .info-section {
+        width: 90%;
+        max-width: 1000px;
+        margin: 0 auto 50px;
+        display: flex;
+        gap: 20px;
+        justify-content: center;
+        flex-wrap: wrap;
+    }
+
+    .info-box {
+        background: white;
+        width: 280px;
+        padding: 25px;
+        border-radius: 12px;
+        text-align: center;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.08);
+    }
+
+    .info-box h3 {
+        color: #c62828;
+        margin-bottom: 10px;
+    }
+
+    .info-box p {
+        color: #666;
+        line-height: 1.5;
+        font-size: 14px;
+    }
+
+    /* Footer */
+    footer {
+        background: #222;
+        color: #ccc;
+        text-align: center;
+        padding: 20px;
+        font-size: 14px;
+    }
+
+    @media (max-width: 600px) {
+        .hero h1 {
+            font-size: 32px;
+        }
+
+        header {
+            padding: 18px 5%;
+        }
+
+        .logo {
+            font-size: 23px;
+        }
+
+        .tagline {
+            display: none;
+        }
+
+        .search-card {
+            padding: 25px;
+        }
+    }
+</style>
+```
+
+</head>
+
+<body>
+
+```
+<header>
+    <div class="logo">EmergencyServices</div>
+    <div class="tagline">Fast Emergency Response System</div>
+</header>
+
+<section class="hero">
+    <h1>Emergency Response System</h1>
+    <p>Find nearby emergency responders quickly.</p>
+</section>
+
+<section class="search-card">
+
+    <h2>Find an Emergency Responder</h2>
+
+    <!-- Form connects directly to C backend -->
+    <form action="/search" method="POST">
+
+        <div class="form-group">
+            <label for="location">Your Location</label>
+
+            <input
+                type="text"
+                id="location"
+                name="location"
+                placeholder="Example: City Center"
+                required
+            >
+        </div>
+
+        <div class="form-group">
+            <label for="emergency">Emergency Type</label>
+
+            <select
+                id="emergency"
+                name="emergency"
+                required
+            >
+                <option value="">Select Emergency Type</option>
+                <option value="Ambulance">Ambulance</option>
+                <option value="Fire">Fire</option>
+                <option value="Police">Police</option>
+            </select>
+        </div>
+
+        <button
+            type="submit"
+            class="search-btn"
+        >
+            Find Responder
+        </button>
+
+    </form>
+
+</section>
+
+<section class="info-section">
+
+    <div class="info-box">
+        <h3>Ambulance</h3>
+        <p>
+            Find available ambulance responders
+            based on your location.
+        </p>
+    </div>
+
+    <div class="info-box">
+        <h3>Fire Services</h3>
+        <p>
+            Search for nearby fire emergency
+            responders.
+        </p>
+    </div>
+
+    <div class="info-box">
+        <h3>Police</h3>
+        <p>
+            Find police emergency responders
+            according to your location.
+        </p>
+    </div>
+
+</section>
+
+<footer>
+    EmergencyServices &copy; 2026
+    <br>
+    Emergency Response System
+</footer>
+```
+
+</body>
+</html>

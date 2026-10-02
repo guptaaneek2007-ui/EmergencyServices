@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #ifdef _WIN32
 #include <mysql.h>
@@ -59,6 +60,7 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data)
                     mysql_error(conn));
                 return;
             }
+
             mg_printf(c,
                 "HTTP/1.1 200 OK\r\n"
                 "Content-Type: text/html\r\n"
@@ -113,16 +115,29 @@ int main()
 {
     conn = mysql_init(NULL);
 
-    mysql_real_connect(
+    /* Railway MySQL connection */
+    const char *host = getenv("MYSQLHOST");
+    const char *user = getenv("MYSQLUSER");
+    const char *password = getenv("MYSQLPASSWORD");
+    const char *database = getenv("MYSQLDATABASE");
+    const char *port_string = getenv("MYSQLPORT");
+
+    unsigned int port = atoi(port_string);
+
+    if (mysql_real_connect(
         conn,
-        "localhost",
-        "root",
-        "Aneek@28",
-        "Emergency_System",
-        3306,
+        host,
+        user,
+        password,
+        database,
+        port,
         NULL,
         0
-    );
+    ) == NULL)
+    {
+        printf("MySQL connection failed: %s\n", mysql_error(conn));
+        return 1;
+    }
 
     struct mg_mgr mgr;
 
@@ -147,3 +162,5 @@ int main()
 
     return 0;
 }
+```
+

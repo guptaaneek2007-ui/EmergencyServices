@@ -118,7 +118,7 @@ int main()
     /* Railway MySQL connection */
     const char *host = getenv("MYSQLHOST");
     const char *user = getenv("MYSQLUSER");
-    const char *password = getenv("MYSQLPASSWORD");
+    const char *password = getenv("Aneek@28");
     const char *database = getenv("MYSQLDATABASE");
     const char *port_string = getenv("MYSQLPORT");
 
@@ -162,5 +162,4 @@ int main()
 
     return 0;
 }
-```
 

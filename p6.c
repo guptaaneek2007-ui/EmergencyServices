@@ -17,15 +17,11 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data)
     if (ev == MG_EV_HTTP_MSG)
     {
         struct mg_http_message *hm = (struct mg_http_message *)ev_data;
-
-        /* Open website */
-        if (mg_match(hm->uri, mg_str("/"), NULL))
+        if(mg_match(hm->uri, mg_str("/"), NULL))
         {
             struct mg_http_serve_opts opts = {0};
             mg_http_serve_file(c, hm, "index.html", &opts);
         }
-
-        /* Search responder */
         else if (mg_match(hm->uri, mg_str("/search"), NULL))
         {
             char x[100];
@@ -103,7 +99,6 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data)
 
             mg_http_printf_chunk(c, "</body></html>");
 
-            /* IMPORTANT: empty chunk = response finished */
             mg_http_printf_chunk(c, "");
 
             mysql_free_result(result);
@@ -142,14 +137,23 @@ int main()
     struct mg_mgr mgr;
 
     mg_mgr_init(&mgr);
+    const char *port = getenv("PORT");
 
-    mg_http_listen(
-        &mgr,
-        "http://0.0.0.0:8080",
-        ev_handler,
-        NULL
-    );
+char address[100];
 
+snprintf(
+    address,
+    sizeof(address),
+    "http://0.0.0.0:%s",
+    port ? port : "8080"
+);
+
+mg_http_listen(
+    &mgr,
+    address,
+    ev_handler,
+    NULL
+);
     printf("Server started at http://EmergencyServices:8080\n");
 
     for (;;)

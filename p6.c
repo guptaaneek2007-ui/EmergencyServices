@@ -134,9 +134,11 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
         mysql_real_escape_string(conn, escaped_query, query_param, strlen(query_param));
 
         // Build query
-        char sql_query[1024];
+        char sql_query[2048];
         snprintf(sql_query, sizeof(sql_query),
-                 "SELECT * FROM search_items WHERE name LIKE '%%%s%%'", escaped_query);
+                 "SELECT * FROM responders WHERE name LIKE '%%%s%%' "
+                 "OR type LIKE '%%%s%%' OR location LIKE '%%%s%%'",
+                 escaped_query, escaped_query, escaped_query);
 
         if (mysql_query(conn, sql_query)) {
             const char *err = mysql_error(conn);
@@ -158,7 +160,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
         }
 
         // Build JSON response (overflow-safe)
-        char json_response[8192];
+        char json_response[16384];
         size_t offset = 0;
         json_response[0] = '\0';
         append_raw(json_response, sizeof(json_response), &offset, "{\"results\":[");
@@ -166,15 +168,22 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
         MYSQL_ROW row;
         int first = 1;
         while ((row = mysql_fetch_row(result))) {
-            if (offset + 600 >= sizeof(json_response)) break;  // leave room, stop adding rows
+            if (offset + 1200 >= sizeof(json_response)) break;  // leave room, stop adding rows
 
             if (!first) append_raw(json_response, sizeof(json_response), &offset, ",");
             first = 0;
 
+            // Columns of responders: id, name, type, location, phone
             append_raw(json_response, sizeof(json_response), &offset, "{\"id\":\"");
             append_escaped(json_response, sizeof(json_response), &offset, row[0] ? row[0] : "");
             append_raw(json_response, sizeof(json_response), &offset, "\",\"name\":\"");
             append_escaped(json_response, sizeof(json_response), &offset, row[1] ? row[1] : "");
+            append_raw(json_response, sizeof(json_response), &offset, "\",\"type\":\"");
+            append_escaped(json_response, sizeof(json_response), &offset, row[2] ? row[2] : "");
+            append_raw(json_response, sizeof(json_response), &offset, "\",\"location\":\"");
+            append_escaped(json_response, sizeof(json_response), &offset, row[3] ? row[3] : "");
+            append_raw(json_response, sizeof(json_response), &offset, "\",\"phone\":\"");
+            append_escaped(json_response, sizeof(json_response), &offset, row[4] ? row[4] : "");
             append_raw(json_response, sizeof(json_response), &offset, "\"}");
         }
         append_raw(json_response, sizeof(json_response), &offset, "]}");

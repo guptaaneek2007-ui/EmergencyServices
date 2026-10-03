@@ -31,7 +31,7 @@ MYSQL *connect_db(void) {
         return NULL;
     }
 
-    // Force TCP Protocol for network connections on Railway (prevents Unix socket lookup error)
+    // Force TCP Protocol for network connections on Railway
     unsigned int protocol = MYSQL_PROTOCOL_TCP;
     mysql_options(conn, MYSQL_OPT_PROTOCOL, &protocol);
 
@@ -50,8 +50,8 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
     if (ev == MG_EV_HTTP_MSG) {
         struct mg_http_message *hm = (struct mg_http_message *) ev_data;
 
-        // Route: POST /search using Mongoose v7 signature (mg_vcasecmp with string literal)
-        if (mg_match(hm->uri, mg_str("/search"), NULL) && mg_vcmp(&hm->method, "POST") == 0) {
+        // Route: POST /search using mg_match for both URI and Method
+        if (mg_match(hm->uri, mg_str("/search"), NULL) && mg_match(hm->method, mg_str("POST"), NULL)) {
             
             // Extract 'query' parameter from HTTP POST body
             char query_param[256] = {0};
@@ -64,7 +64,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 return;
             }
 
-            // Escape user input to prevent SQL Injection (Buffer sized to 2*len + 1)
+            // Escape user input to prevent SQL Injection
             char escaped_query[513] = {0};
             mysql_real_escape_string(conn, escaped_query, query_param, strlen(query_param));
 
@@ -87,7 +87,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 return;
             }
 
-            // Construct JSON response safely without buffer overruns
+            // Construct JSON response safely
             char json_response[8192];
             size_t offset = 0;
             offset += snprintf(json_response + offset, sizeof(json_response) - offset, "{\"results\": [");
@@ -97,7 +97,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
 
             while ((row = mysql_fetch_row(result))) {
                 if (offset >= sizeof(json_response) - 100) {
-                    break; // Prevent buffer overrun if rows exceed capacity
+                    break;
                 }
 
                 if (!first) {

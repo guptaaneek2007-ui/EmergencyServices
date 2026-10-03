@@ -106,6 +106,26 @@ static MYSQL *connect_db(char *err_out, size_t err_size) {
     return conn;
 }
 
+// Read the search text from the request body (form data OR JSON, several common field names)
+static void get_search_text(struct mg_http_message *hm, char *out, size_t size) {
+    static const char *form_keys[] = {"query", "q", "search", "name", "keyword", "term"};
+    static const char *json_paths[] = {"$.query", "$.q", "$.search", "$.name", "$.keyword", "$.term"};
+    size_t i;
+    out[0] = '\0';
+    for (i = 0; i < sizeof(form_keys) / sizeof(form_keys[0]); i++) {
+        if (mg_http_get_var(&hm->body, form_keys[i], out, size) > 0) return;
+    }
+    for (i = 0; i < sizeof(json_paths) / sizeof(json_paths[0]); i++) {
+        char *v = mg_json_get_str(hm->body, json_paths[i]);
+        if (v != NULL) {
+            snprintf(out, size, "%s", v);
+            free(v);
+            if (out[0] != '\0') return;
+        }
+    }
+    out[0] = '\0';
+}
+
 // HTTP event handler
 static void fn(struct mg_connection *c, int ev, void *ev_data) {
     if (ev != MG_EV_HTTP_MSG) return;
@@ -120,7 +140,10 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
         mg_match(hm->method, mg_str("POST"), NULL)) {
 
         char query_param[256] = {0};
-        mg_http_get_var(&hm->body, "query", query_param, sizeof(query_param));
+        get_search_text(hm, query_param, sizeof(query_param));
+        printf("[SEARCH] body=%.*s -> query='%s'\n", (int) (hm->body.len > 200 ? 200 : hm->body.len),
+               hm->body.buf, query_param);
+        fflush(stdout);
 
         char conn_err[512] = {0};
         MYSQL *conn = connect_db(conn_err, sizeof(conn_err));

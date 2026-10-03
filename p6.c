@@ -4,26 +4,28 @@
 #include <mysql/mysql.h>
 #include "mongoose.h"
 
-// Helper function to safely fetch environment variables with fallbacks
-static const char *get_env_var(const char *primary, const char *secondary, const char *default_val) {
-    const char *val = getenv(primary);
-    if (!val && secondary) {
-        val = getenv(secondary);
-    }
-    if (!val) {
-        return default_val;
+// Safely get environment variable (no dangerous fallbacks)
+static const char *must_get_env(const char *name) {
+    const char *val = getenv(name);
+    if (!val || val[0] == '\0') {
+        fprintf(stderr, "[DB ERROR] Required environment variable '%s' is missing or empty\n", name);
+        return NULL;
     }
     return val;
 }
 
-// Function to establish MySQL Database Connection
+// Establish MySQL connection
 MYSQL *connect_db(void) {
-    const char *host     = get_env_var("MYSQLHOST", "MYSQL_HOST", "127.0.0.1");
-    const char *user     = get_env_var("MYSQLUSER", "MYSQL_USER", "root");
-    const char *pass     = get_env_var("MYSQLPASSWORD", "MYSQL_PASSWORD", "");
-    const char *db       = get_env_var("MYSQLDATABASE", "MYSQL_DATABASE", "railway");
-    const char *port_str = get_env_var("MYSQLPORT", "MYSQL_PORT", "3306");
-    unsigned int port    = (unsigned int) atoi(port_str);
+    const char *host = must_get_env("MYSQLHOST");
+    const char *user = must_get_env("MYSQLUSER");
+    const char *pass = must_get_env("MYSQLPASSWORD");
+    const char *db   = must_get_env("MYSQLDATABASE");
+    const char *port_str = getenv("MYSQLPORT");
+    unsigned int port = port_str ? (unsigned int)atoi(port_str) : 3306;
+
+    if (!host || !user || !pass || !db) {
+        return NULL;
+    }
 
     MYSQL *conn = mysql_init(NULL);
     if (conn == NULL) {
@@ -31,15 +33,20 @@ MYSQL *connect_db(void) {
         return NULL;
     }
 
-    // Force TCP Protocol for network connections on Railway
+    // Force TCP
     unsigned int protocol = MYSQL_PROTOCOL_TCP;
     mysql_options(conn, MYSQL_OPT_PROTOCOL, &protocol);
 
-    // Attempt MySQL connection
-    if (mysql_real_connect(conn, host, user, pass, db, port, NULL, 0) == NULL) {
+    // Enable SSL (Railway often requires it)
+#if defined(MYSQL_OPT_SSL_MODE)
+    enum mysql_ssl_mode ssl_mode = SSL_MODE_REQUIRED;
+    mysql_options(conn, MYSQL_OPT_SSL_MODE, &ssl_mode);
+#endif
+
+    if (mysql_real_connect(conn, host, user, pass, db, port, NULL, CLIENT_MULTI_STATEMENTS) == NULL) {
         fprintf(stderr, "[DB ERROR] mysql_real_connect failed: %s\n", mysql_error(conn));
-        mysql_close(conn);
-        return NULL;
+        // We keep the connection object so the caller can still read mysql_error()
+        return conn;   // caller must check mysql_error
     }
 
     return conn;
@@ -48,46 +55,59 @@ MYSQL *connect_db(void) {
 // HTTP Event Handler
 static void fn(struct mg_connection *c, int ev, void *ev_data) {
     if (ev == MG_EV_HTTP_MSG) {
-        struct mg_http_message *hm = (struct mg_http_message *) ev_data;
+        struct mg_http_message *hm = (struct mg_http_message *)ev_data;
 
-        // Route: POST /search using mg_match for both URI and Method
-        if (mg_match(hm->uri, mg_str("/search"), NULL) && mg_match(hm->method, mg_str("POST"), NULL)) {
-            
-            // Extract 'query' parameter from HTTP POST body
+        // POST /search
+        if (mg_match(hm->uri, mg_str("/search"), NULL) &&
+            mg_match(hm->method, mg_str("POST"), NULL)) {
+
             char query_param[256] = {0};
             mg_http_get_var(&hm->body, "query", query_param, sizeof(query_param));
 
-            // Connect to MySQL
             MYSQL *conn = connect_db();
-            if (conn == NULL) {
-                mg_http_reply(c, 500, "Content-Type: application/json\r\n", "{\"error\": \"Database Connection Failed\"}");
+
+            // Check if connection really succeeded
+            if (conn == NULL || mysql_errno(conn) != 0) {
+                const char *err = (conn && mysql_error(conn)[0]) ? mysql_error(conn) : "Unknown connection error (check environment variables)";
+                fprintf(stderr, "[DB ERROR] Connection failed: %s\n", err);
+
+                // Return the REAL error to the browser so you can see it
+                mg_http_reply(c, 500, "Content-Type: application/json\r\n",
+                              "{\"error\": \"Database Connection Failed\", \"details\": \"%s\"}", err);
+
+                if (conn) mysql_close(conn);
                 return;
             }
 
-            // Escape user input to prevent SQL Injection
+            // Escape input
             char escaped_query[513] = {0};
             mysql_real_escape_string(conn, escaped_query, query_param, strlen(query_param));
 
-            // Build SQL Query
+            // Build query
             char sql_query[1024];
-            snprintf(sql_query, sizeof(sql_query), "SELECT * FROM search_items WHERE name LIKE '%%%s%%'", escaped_query);
+            snprintf(sql_query, sizeof(sql_query),
+                     "SELECT * FROM search_items WHERE name LIKE '%%%s%%'", escaped_query);
 
             if (mysql_query(conn, sql_query)) {
-                fprintf(stderr, "[DB ERROR] Query failed: %s\n", mysql_error(conn));
-                mg_http_reply(c, 500, "Content-Type: application/json\r\n", "{\"error\": \"Database Query Failed\"}");
+                const char *err = mysql_error(conn);
+                fprintf(stderr, "[DB ERROR] Query failed: %s\n", err);
+                mg_http_reply(c, 500, "Content-Type: application/json\r\n",
+                              "{\"error\": \"Database Query Failed\", \"details\": \"%s\"}", err);
                 mysql_close(conn);
                 return;
             }
 
             MYSQL_RES *result = mysql_store_result(conn);
             if (result == NULL) {
-                fprintf(stderr, "[DB ERROR] mysql_store_result failed: %s\n", mysql_error(conn));
-                mg_http_reply(c, 500, "Content-Type: application/json\r\n", "{\"error\": \"Failed to retrieve query results\"}");
+                const char *err = mysql_error(conn);
+                fprintf(stderr, "[DB ERROR] mysql_store_result failed: %s\n", err);
+                mg_http_reply(c, 500, "Content-Type: application/json\r\n",
+                              "{\"error\": \"Failed to retrieve results\", \"details\": \"%s\"}", err);
                 mysql_close(conn);
                 return;
             }
 
-            // Construct JSON response safely
+            // Build JSON response
             char json_response[8192];
             size_t offset = 0;
             offset += snprintf(json_response + offset, sizeof(json_response) - offset, "{\"results\": [");
@@ -96,31 +116,28 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
             int first = 1;
 
             while ((row = mysql_fetch_row(result))) {
-                if (offset >= sizeof(json_response) - 100) {
-                    break;
-                }
+                if (offset >= sizeof(json_response) - 150) break;
 
                 if (!first) {
                     offset += snprintf(json_response + offset, sizeof(json_response) - offset, ",");
                 }
                 first = 0;
 
-                offset += snprintf(json_response + offset, sizeof(json_response) - offset, 
-                                   "{\"id\":\"%s\",\"name\":\"%s\"}", 
-                                   row[0] ? row[0] : "", 
+                offset += snprintf(json_response + offset, sizeof(json_response) - offset,
+                                   "{\"id\":\"%s\",\"name\":\"%s\"}",
+                                   row[0] ? row[0] : "",
                                    row[1] ? row[1] : "");
             }
 
             snprintf(json_response + offset, sizeof(json_response) - offset, "]}");
 
-            // Clean up MySQL pointers
             mysql_free_result(result);
             mysql_close(conn);
 
-            // Send successful JSON HTTP response
             mg_http_reply(c, 200, "Content-Type: application/json\r\n", "%s", json_response);
-        } else {
-            // Serve static files or fallback
+        }
+        else {
+            // Serve static files
             struct mg_http_serve_opts opts = {.root_dir = "."};
             mg_http_serve_dir(c, hm, &opts);
         }
@@ -138,7 +155,10 @@ int main(void) {
     printf("[SERVER START] Listening on %s\n", listen_address);
     fflush(stdout);
 
-    mg_http_listen(&mgr, listen_address, fn, NULL);
+    if (mg_http_listen(&mgr, listen_address, fn, NULL) == NULL) {
+        fprintf(stderr, "Failed to listen on %s\n", listen_address);
+        return 1;
+    }
 
     for (;;) {
         mg_mgr_poll(&mgr, 1000);

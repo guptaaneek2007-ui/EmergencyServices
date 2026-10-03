@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <stdio.h>
 #include <stdlib.h>
-
 #ifdef _WIN32
 #include <mysql.h>
 #else
@@ -112,7 +111,7 @@ int main()
     mysql_options(conn,MYSQL_OPT_CONNECT_TIMEOUT,"5");
     const char *host = getenv("MYSQLHOST");
     const char *user = getenv("MYSQLUSER");
-    const char *password = getenv("Aneek@28");
+    const char *password = getenv("MYSQLPASSWORD");
     const char *database = getenv("MYSQLDATABASE");
     const char *port_string = getenv("MYSQLPORT");
 

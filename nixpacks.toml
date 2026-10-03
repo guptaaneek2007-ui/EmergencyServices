@@ -2,7 +2,7 @@
 aptPkgs = ["build-essential", "default-libmysqlclient-dev"]
 
 [phases.build]
-cmds = ["gcc main.c mongoose.c -o server -lmysqlclient"]
+cmds = ["gcc p6.c mongoose.c -o server -lmysqlclient"]
 
 [start]
 cmd = "./server"

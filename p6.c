@@ -51,7 +51,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
         struct mg_http_message *hm = (struct mg_http_message *) ev_data;
 
         // Route: POST /search
-        if (mg_match(hm->uri, mg_str("/search"), NULL) && mg_vcasecmp(&hm->method, mg_str("POST")) == 0) {
+        if (mg_match(hm->uri, mg_str("/search"), NULL) && mg_casecmp(&hm->method, mg_str("POST")) == 0) {
             
             // Extract 'query' parameter from HTTP POST body
             char query_param[256] = {0};

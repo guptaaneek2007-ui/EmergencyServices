@@ -50,8 +50,8 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
     if (ev == MG_EV_HTTP_MSG) {
         struct mg_http_message *hm = (struct mg_http_message *) ev_data;
 
-        // Route: POST /search
-        if (mg_match(hm->uri, mg_str("/search"), NULL) && mg_casecmp(&hm->method, mg_str("POST")) == 0) {
+        // Route: POST /search using Mongoose v7 signature (mg_vcasecmp with string literal)
+        if (mg_match(hm->uri, mg_str("/search"), NULL) && mg_vcasecmp(&hm->method, "POST") == 0) {
             
             // Extract 'query' parameter from HTTP POST body
             char query_param[256] = {0};
@@ -64,8 +64,8 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 return;
             }
 
-            // Escape user input to prevent SQL Injection
-            char escaped_query[512] = {0};
+            // Escape user input to prevent SQL Injection (Buffer sized to 2*len + 1)
+            char escaped_query[513] = {0};
             mysql_real_escape_string(conn, escaped_query, query_param, strlen(query_param));
 
             // Build SQL Query
@@ -87,24 +87,31 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
                 return;
             }
 
-            // Construct JSON response from MySQL result rows
-            char json_response[4096] = "{\"results\": [";
+            // Construct JSON response safely without buffer overruns
+            char json_response[8192];
+            size_t offset = 0;
+            offset += snprintf(json_response + offset, sizeof(json_response) - offset, "{\"results\": [");
+
             MYSQL_ROW row;
             int first = 1;
 
             while ((row = mysql_fetch_row(result))) {
+                if (offset >= sizeof(json_response) - 100) {
+                    break; // Prevent buffer overrun if rows exceed capacity
+                }
+
                 if (!first) {
-                    strcat(json_response, ",");
+                    offset += snprintf(json_response + offset, sizeof(json_response) - offset, ",");
                 }
                 first = 0;
 
-                char item_buf[512];
-                snprintf(item_buf, sizeof(item_buf), "{\"id\":\"%s\",\"name\":\"%s\"}", 
-                         row[0] ? row[0] : "", 
-                         row[1] ? row[1] : "");
-                strcat(json_response, item_buf);
+                offset += snprintf(json_response + offset, sizeof(json_response) - offset, 
+                                   "{\"id\":\"%s\",\"name\":\"%s\"}", 
+                                   row[0] ? row[0] : "", 
+                                   row[1] ? row[1] : "");
             }
-            strcat(json_response, "]}");
+
+            snprintf(json_response + offset, sizeof(json_response) - offset, "]}");
 
             // Clean up MySQL pointers
             mysql_free_result(result);

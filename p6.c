@@ -8,13 +8,63 @@
 
 #include "mongoose.h"
 
-MYSQL *conn;
+MYSQL *conn = NULL;
+
+// Helper function to reconnect to MySQL if connection drops or expires
+int ensure_mysql_connection()
+{
+    // Check if connection exists and is alive
+    if (conn != NULL && mysql_ping(conn) == 0)
+    {
+        return 1; // Connection is fine
+    }
+
+    printf("MySQL connection missing or dropped. Reconnecting...\n");
+
+    if (conn != NULL)
+    {
+        mysql_close(conn);
+        conn = NULL;
+    }
+
+    conn = mysql_init(NULL);
+    if (conn == NULL)
+    {
+        printf("mysql_init failed\n");
+        return 0;
+    }
+
+    // Set connection options
+    unsigned int timeout = 5;
+    mysql_options(conn, MYSQL_OPT_CONNECT_TIMEOUT, &timeout);
+
+    my_bool reconnect = 1;
+    mysql_options(conn, MYSQL_OPT_RECONNECT, &reconnect);
+
+    const char *host = getenv("MYSQLHOST");
+    const char *user = getenv("MYSQLUSER");
+    const char *password = getenv("MYSQLPASSWORD");
+    const char *database = getenv("MYSQLDATABASE");
+    const char *port_string = getenv("MYSQLPORT");
+
+    unsigned int port = port_string ? atoi(port_string) : 3306;
+
+    if (mysql_real_connect(conn, host, user, password, database, port, NULL, 0) == NULL)
+    {
+        printf("MySQL reconnect failed: %s\n", mysql_error(conn));
+        return 0;
+    }
+
+    printf("MySQL connection established successfully!\n");
+    return 1;
+}
 
 static void ev_handler(struct mg_connection *c, int ev, void *ev_data)
 {
     if (ev == MG_EV_HTTP_MSG)
     {
         struct mg_http_message *hm = (struct mg_http_message *)ev_data;
+
         if (mg_match(hm->uri, mg_str("/"), NULL))
         {
             struct mg_http_serve_opts opts = {0};
@@ -29,18 +79,28 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data)
             mg_http_get_var(&hm->body, "location", x, sizeof(x));
             mg_http_get_var(&hm->body, "emergency", y, sizeof(y));
 
-            sprintf(query,
+            // Ensure database is connected before querying
+            if (!ensure_mysql_connection())
+            {
+                mg_http_reply(c, 500,
+                    "Content-Type: text/html\r\n",
+                    "<h2>Database Connection Error: %s</h2>",
+                    conn ? mysql_error(conn) : "Could not establish database connection");
+                return;
+            }
+
+            snprintf(query, sizeof(query),
                     "SELECT * FROM responders "
                     "WHERE location LIKE '%%%s%%' "
                     "AND type LIKE '%%%s%%'",
                     x, y);
 
-            if (conn == NULL || mysql_query(conn, query) != 0)
+            if (mysql_query(conn, query) != 0)
             {
                 mg_http_reply(c, 500,
                     "Content-Type: text/html\r\n",
                     "<h2>Query error: %s</h2>",
-                    conn ? mysql_error(conn) : "No DB Connection");
+                    mysql_error(conn));
                 return;
             }
 
@@ -91,10 +151,10 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data)
                         "<b>Phone:</b> %s"
                         "</p>"
                         "<hr>",
-                        row[0] ? row[0] : "", 
-                        row[1] ? row[1] : "", 
-                        row[2] ? row[2] : "", 
-                        row[3] ? row[3] : "", 
+                        row[0] ? row[0] : "",
+                        row[1] ? row[1] : "",
+                        row[2] ? row[2] : "",
+                        row[3] ? row[3] : "",
                         row[4] ? row[4] : "");
                 }
             }
@@ -109,42 +169,10 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data)
 
 int main()
 {
-    // 1. Safe MySQL Initialization
-    conn = mysql_init(NULL);
-    unsigned int timeout = 5;
-    mysql_options(conn, MYSQL_OPT_CONNECT_TIMEOUT, &timeout);
+    // Attempt initial connection on startup
+    ensure_mysql_connection();
 
-    const char *host = getenv("MYSQLHOST");
-    const char *user = getenv("MYSQLUSER");
-    const char *password = getenv("MYSQLPASSWORD");
-    const char *database = getenv("MYSQLDATABASE");
-    const char *port_string = getenv("MYSQLPORT");
-
-    // Safe port parsing
-    unsigned int port = port_string ? atoi(port_string) : 3306;
-
-    printf("Connecting to MySQL at %s:%d...\n", host ? host : "localhost", port);
-
-    if (mysql_real_connect(
-        conn,
-        host,
-        user,
-        password,
-        database,
-        port,
-        NULL,
-        0
-    ) == NULL)
-    {
-        printf("MySQL connection failed: %s\n", mysql_error(conn));
-        printf("Starting HTTP server anyway (DB error will show on request)...\n");
-    }
-    else
-    {
-        printf("Connected to MySQL successfully!\n");
-    }
-
-    // 2. Mongoose Web Server Initialization
+    // Initialize Mongoose Web Server
     struct mg_mgr mgr;
     mg_mgr_init(&mgr);
 
@@ -160,12 +188,13 @@ int main()
 
     printf("Binding server to %s\n", address);
 
-    if (mg_http_listen(&mgr, address, ev_handler, NULL) == NULL) {
+    if (mg_http_listen(&mgr, address, ev_handler, NULL) == NULL)
+    {
         printf("Failed to listen on %s\n", address);
         return 1;
     }
 
-    // 3. Event Loop
+    // Event Loop
     for (;;)
     {
         mg_mgr_poll(&mgr, 1000);

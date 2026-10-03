@@ -51,7 +51,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
         struct mg_http_message *hm = (struct mg_http_message *) ev_data;
 
         // Route: POST /search using Mongoose v7 signature (mg_vcasecmp with string literal)
-        if (mg_match(hm->uri, mg_str("/search"), NULL) && mg_vcasecmp(&hm->method, "POST") == 0) {
+        if (mg_match(hm->uri, mg_str("/search"), NULL) && mg_vcmp(&hm->method, "POST") == 0) {
             
             // Extract 'query' parameter from HTTP POST body
             char query_param[256] = {0};

@@ -4,6 +4,8 @@
 #include <mysql/mysql.h>
 #include "mongoose.h"
 
+#define PAGE_MAX 65536
+
 // Get a required environment variable (NULL if missing)
 static const char *must_get_env(const char *name) {
     const char *val = getenv(name);
@@ -15,30 +17,7 @@ static const char *must_get_env(const char *name) {
     return val;
 }
 
-// Append a string to buf as JSON-escaped text, never overflowing buf
-static void append_escaped(char *buf, size_t size, size_t *off, const char *s) {
-    for (; s && *s; s++) {
-        if (*off + 8 >= size) return;  // keep room for the longest escape + terminator
-        unsigned char ch = (unsigned char) *s;
-        if (ch == '"' || ch == '\\') {
-            buf[(*off)++] = '\\';
-            buf[(*off)++] = (char) ch;
-        } else if (ch == '\n') {
-            buf[(*off)++] = '\\'; buf[(*off)++] = 'n';
-        } else if (ch == '\r') {
-            buf[(*off)++] = '\\'; buf[(*off)++] = 'r';
-        } else if (ch == '\t') {
-            buf[(*off)++] = '\\'; buf[(*off)++] = 't';
-        } else if (ch < 0x20) {
-            // skip other control characters
-        } else {
-            buf[(*off)++] = (char) ch;
-        }
-    }
-    buf[*off] = '\0';
-}
-
-// Append a plain (already safe) string
+// Append a plain string to buf (never overflows)
 static void append_raw(char *buf, size_t size, size_t *off, const char *s) {
     size_t n = strlen(s);
     if (*off + n + 1 >= size) return;
@@ -46,21 +25,76 @@ static void append_raw(char *buf, size_t size, size_t *off, const char *s) {
     *off += n;
 }
 
-// Reply with a JSON error without breaking on quotes in the message
-static void reply_error(struct mg_connection *c, int code, const char *title, const char *details) {
-    char body[1024];
-    size_t off = 0;
-    body[0] = '\0';
-    append_raw(body, sizeof(body), &off, "{\"error\":\"");
-    append_escaped(body, sizeof(body), &off, title);
-    append_raw(body, sizeof(body), &off, "\",\"details\":\"");
-    append_escaped(body, sizeof(body), &off, details);
-    append_raw(body, sizeof(body), &off, "\"}");
-    mg_http_reply(c, code, "Content-Type: application/json\r\n", "%s", body);
+// Append a string to buf with HTML special characters escaped
+static void append_html(char *buf, size_t size, size_t *off, const char *s) {
+    for (; s && *s; s++) {
+        const char *rep = NULL;
+        switch (*s) {
+            case '&':  rep = "&amp;";  break;
+            case '<':  rep = "&lt;";   break;
+            case '>':  rep = "&gt;";   break;
+            case '"':  rep = "&quot;"; break;
+            case '\'': rep = "&#39;";  break;
+            default: break;
+        }
+        if (rep) {
+            append_raw(buf, size, off, rep);
+        } else {
+            if (*off + 2 >= size) return;
+            buf[(*off)++] = *s;
+            buf[*off] = '\0';
+        }
+    }
 }
 
-// Establish MySQL connection. Returns NULL on any failure (connection is closed).
-// On failure, the reason is copied into err_out.
+static const char *PAGE_HEAD =
+    "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\">"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">"
+    "<title>EmergencyServices - Results</title><style>"
+    "*{box-sizing:border-box;margin:0;padding:0;font-family:Arial,Helvetica,sans-serif}"
+    "body{background:#f4f6f8;color:#222}"
+    "header{background:#c62828;color:#fff;padding:20px 8%;font-size:26px;font-weight:bold}"
+    ".wrap{width:92%;max-width:760px;margin:30px auto}"
+    "h2{color:#b71c1c;margin-bottom:6px}"
+    ".sub{color:#666;margin-bottom:20px}"
+    ".card{background:#fff;border-radius:12px;padding:18px 22px;margin-bottom:14px;"
+    "box-shadow:0 4px 15px rgba(0,0,0,.08)}"
+    ".card h3{color:#c62828;margin-bottom:6px}"
+    ".card p{color:#555;margin:3px 0;line-height:1.4}"
+    ".card a{color:#c62828;font-weight:bold;text-decoration:none}"
+    ".back{display:inline-block;margin-top:10px;padding:12px 22px;background:#c62828;"
+    "color:#fff;border-radius:8px;text-decoration:none;font-weight:bold}"
+    ".none{background:#fff;padding:24px;border-radius:12px;text-align:center;color:#666}"
+    "</style></head><body><header>EmergencyServices</header><div class=\"wrap\">";
+
+static const char *PAGE_FOOT =
+    "<a class=\"back\" href=\"/\">&larr; New search</a></div></body></html>";
+
+static void send_page(struct mg_connection *c, int code, const char *html) {
+    mg_http_reply(c, code, "Content-Type: text/html; charset=utf-8\r\n", "%s", html);
+}
+
+// Show an error page
+static void reply_error(struct mg_connection *c, int code, const char *title, const char *details) {
+    char *page = (char *) malloc(PAGE_MAX);
+    if (!page) {
+        mg_http_reply(c, 500, "", "Out of memory");
+        return;
+    }
+    size_t off = 0;
+    page[0] = '\0';
+    append_raw(page, PAGE_MAX, &off, PAGE_HEAD);
+    append_raw(page, PAGE_MAX, &off, "<h2>");
+    append_html(page, PAGE_MAX, &off, title);
+    append_raw(page, PAGE_MAX, &off, "</h2><p class=\"sub\">");
+    append_html(page, PAGE_MAX, &off, details);
+    append_raw(page, PAGE_MAX, &off, "</p>");
+    append_raw(page, PAGE_MAX, &off, PAGE_FOOT);
+    send_page(c, code, page);
+    free(page);
+}
+
+// Establish MySQL connection. Returns NULL on any failure (reason copied to err_out).
 static MYSQL *connect_db(char *err_out, size_t err_size) {
     const char *host = must_get_env("MYSQLHOST");
     const char *user = must_get_env("MYSQLUSER");
@@ -80,11 +114,10 @@ static MYSQL *connect_db(char *err_out, size_t err_size) {
         return NULL;
     }
 
-    // Force TCP
     unsigned int protocol = MYSQL_PROTOCOL_TCP;
     mysql_options(conn, MYSQL_OPT_PROTOCOL, &protocol);
 
-    // IMPORTANT: timeouts so a bad host/port fails fast instead of hanging forever
+    // Timeouts so a bad host/port fails fast instead of hanging forever
     unsigned int timeout = 5;
     mysql_options(conn, MYSQL_OPT_CONNECT_TIMEOUT, &timeout);
     mysql_options(conn, MYSQL_OPT_READ_TIMEOUT, &timeout);
@@ -106,26 +139,6 @@ static MYSQL *connect_db(char *err_out, size_t err_size) {
     return conn;
 }
 
-// Read the search text from the request body (form data OR JSON, several common field names)
-static void get_search_text(struct mg_http_message *hm, char *out, size_t size) {
-    static const char *form_keys[] = {"query", "q", "search", "name", "keyword", "term"};
-    static const char *json_paths[] = {"$.query", "$.q", "$.search", "$.name", "$.keyword", "$.term"};
-    size_t i;
-    out[0] = '\0';
-    for (i = 0; i < sizeof(form_keys) / sizeof(form_keys[0]); i++) {
-        if (mg_http_get_var(&hm->body, form_keys[i], out, size) > 0) return;
-    }
-    for (i = 0; i < sizeof(json_paths) / sizeof(json_paths[0]); i++) {
-        char *v = mg_json_get_str(hm->body, json_paths[i]);
-        if (v != NULL) {
-            snprintf(out, size, "%s", v);
-            free(v);
-            if (out[0] != '\0') return;
-        }
-    }
-    out[0] = '\0';
-}
-
 // HTTP event handler
 static void fn(struct mg_connection *c, int ev, void *ev_data) {
     if (ev != MG_EV_HTTP_MSG) return;
@@ -135,39 +148,43 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
            (int) hm->uri.len, hm->uri.buf);
     fflush(stdout);
 
-    // POST /search
+    // POST /search  (form fields: location, emergency)
     if (mg_match(hm->uri, mg_str("/search"), NULL) &&
         mg_match(hm->method, mg_str("POST"), NULL)) {
 
-        char query_param[256] = {0};
-        get_search_text(hm, query_param, sizeof(query_param));
-        printf("[SEARCH] body=%.*s -> query='%s'\n", (int) (hm->body.len > 200 ? 200 : hm->body.len),
-               hm->body.buf, query_param);
+        char location[256] = {0};
+        char emergency[64] = {0};
+        mg_http_get_var(&hm->body, "location", location, sizeof(location));
+        mg_http_get_var(&hm->body, "emergency", emergency, sizeof(emergency));
+        printf("[SEARCH] location='%s' emergency='%s'\n", location, emergency);
         fflush(stdout);
 
         char conn_err[512] = {0};
         MYSQL *conn = connect_db(conn_err, sizeof(conn_err));
         if (conn == NULL) {
-            reply_error(c, 500, "Database Connection Failed", conn_err);
+            reply_error(c, 500, "Database connection failed", conn_err);
             return;
         }
 
         // Escape input
-        char escaped_query[513] = {0};
-        mysql_real_escape_string(conn, escaped_query, query_param, strlen(query_param));
+        char esc_location[513] = {0};
+        char esc_emergency[129] = {0};
+        mysql_real_escape_string(conn, esc_location, location, strlen(location));
+        mysql_real_escape_string(conn, esc_emergency, emergency, strlen(emergency));
 
-        // Build query
+        // Build query: both boxes filter the results
         char sql_query[2048];
         snprintf(sql_query, sizeof(sql_query),
-                 "SELECT * FROM responders WHERE name LIKE '%%%s%%' "
-                 "OR type LIKE '%%%s%%' OR location LIKE '%%%s%%'",
-                 escaped_query, escaped_query, escaped_query);
+                 "SELECT name, `type`, `location`, phone FROM responders "
+                 "WHERE `location` LIKE '%%%s%%' AND `type` LIKE '%%%s%%' "
+                 "ORDER BY name LIMIT 50",
+                 esc_location, esc_emergency);
 
         if (mysql_query(conn, sql_query)) {
             const char *err = mysql_error(conn);
             fprintf(stderr, "[DB ERROR] Query failed: %s\n", err);
             fflush(stderr);
-            reply_error(c, 500, "Database Query Failed", err);
+            reply_error(c, 500, "Database query failed", err);
             mysql_close(conn);
             return;
         }
@@ -182,39 +199,52 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
             return;
         }
 
-        // Build JSON response (overflow-safe)
-        char json_response[16384];
-        size_t offset = 0;
-        json_response[0] = '\0';
-        append_raw(json_response, sizeof(json_response), &offset, "{\"results\":[");
-
-        MYSQL_ROW row;
-        int first = 1;
-        while ((row = mysql_fetch_row(result))) {
-            if (offset + 1200 >= sizeof(json_response)) break;  // leave room, stop adding rows
-
-            if (!first) append_raw(json_response, sizeof(json_response), &offset, ",");
-            first = 0;
-
-            // Columns of responders: id, name, type, location, phone
-            append_raw(json_response, sizeof(json_response), &offset, "{\"id\":\"");
-            append_escaped(json_response, sizeof(json_response), &offset, row[0] ? row[0] : "");
-            append_raw(json_response, sizeof(json_response), &offset, "\",\"name\":\"");
-            append_escaped(json_response, sizeof(json_response), &offset, row[1] ? row[1] : "");
-            append_raw(json_response, sizeof(json_response), &offset, "\",\"type\":\"");
-            append_escaped(json_response, sizeof(json_response), &offset, row[2] ? row[2] : "");
-            append_raw(json_response, sizeof(json_response), &offset, "\",\"location\":\"");
-            append_escaped(json_response, sizeof(json_response), &offset, row[3] ? row[3] : "");
-            append_raw(json_response, sizeof(json_response), &offset, "\",\"phone\":\"");
-            append_escaped(json_response, sizeof(json_response), &offset, row[4] ? row[4] : "");
-            append_raw(json_response, sizeof(json_response), &offset, "\"}");
+        char *page = (char *) malloc(PAGE_MAX);
+        if (!page) {
+            mysql_free_result(result);
+            mysql_close(conn);
+            mg_http_reply(c, 500, "", "Out of memory");
+            return;
         }
-        append_raw(json_response, sizeof(json_response), &offset, "]}");
+        size_t off = 0;
+        page[0] = '\0';
+        append_raw(page, PAGE_MAX, &off, PAGE_HEAD);
+        append_raw(page, PAGE_MAX, &off, "<h2>Emergency responders</h2><p class=\"sub\">");
+        append_html(page, PAGE_MAX, &off, emergency);
+        append_raw(page, PAGE_MAX, &off, " near ");
+        append_html(page, PAGE_MAX, &off, location);
+        append_raw(page, PAGE_MAX, &off, "</p>");
+
+        int count = 0;
+        MYSQL_ROW row;
+        while ((row = mysql_fetch_row(result))) {
+            if (off + 2500 >= PAGE_MAX) break;  // keep room, stop adding cards
+            count++;
+            append_raw(page, PAGE_MAX, &off, "<div class=\"card\"><h3>");
+            append_html(page, PAGE_MAX, &off, row[0] ? row[0] : "");
+            append_raw(page, PAGE_MAX, &off, "</h3><p><b>Service:</b> ");
+            append_html(page, PAGE_MAX, &off, row[1] ? row[1] : "");
+            append_raw(page, PAGE_MAX, &off, "</p><p><b>Location:</b> ");
+            append_html(page, PAGE_MAX, &off, row[2] ? row[2] : "");
+            append_raw(page, PAGE_MAX, &off, "</p><p><b>Phone:</b> <a href=\"tel:");
+            append_html(page, PAGE_MAX, &off, row[3] ? row[3] : "");
+            append_raw(page, PAGE_MAX, &off, "\">");
+            append_html(page, PAGE_MAX, &off, row[3] ? row[3] : "");
+            append_raw(page, PAGE_MAX, &off, "</a></p></div>");
+        }
+
+        if (count == 0) {
+            append_raw(page, PAGE_MAX, &off,
+                       "<div class=\"none\">No responders found. Try a different area name.</div>");
+        }
+
+        append_raw(page, PAGE_MAX, &off, PAGE_FOOT);
 
         mysql_free_result(result);
         mysql_close(conn);
 
-        mg_http_reply(c, 200, "Content-Type: application/json\r\n", "%s", json_response);
+        send_page(c, 200, page);
+        free(page);
     } else {
         // Serve static files (index.html etc.)
         struct mg_http_serve_opts opts = {.root_dir = "."};

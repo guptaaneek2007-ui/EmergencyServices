@@ -1,210 +1,142 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#ifdef _WIN32
-#include <mysql.h>
-#else
 #include <mysql/mysql.h>
-#endif
-
 #include "mongoose.h"
 
-static MYSQL *conn = NULL;
-
-// Helper to reliably read Environment Variables (Railway names vs standard names)
-static const char *get_db_env(const char *key1, const char *key2) {
-    const char *val = getenv(key1);
-    if (val != NULL && strlen(val) > 0) return val;
-    if (key2 != NULL) {
-        val = getenv(key2);
-        if (val != NULL && strlen(val) > 0) return val;
+// Helper function to safely fetch environment variables with fallbacks
+static const char *get_env_var(const char *primary, const char *secondary, const char *default_val) {
+    const char *val = getenv(primary);
+    if (!val && secondary) {
+        val = getenv(secondary);
     }
-    return NULL;
+    if (!val) {
+        return default_val;
+    }
+    return val;
 }
 
-// Solid connection manager: Handles reconnection, drops & prevents unix socket fallback
-int ensure_mysql_connection() {
-    // Check if current connection is active and responsive
-    if (conn != NULL) {
-        if (mysql_ping(conn) == 0) {
-            return 1; // Connection alive & healthy
-        } else {
-            printf("[WARN] MySQL connection ping failed. Cleaning up stale connection...\n");
-            mysql_close(conn);
-            conn = NULL;
-        }
-    }
+// Function to establish MySQL Database Connection
+MYSQL *connect_db(void) {
+    const char *host     = get_env_var("MYSQLHOST", "MYSQL_HOST", "127.0.0.1");
+    const char *user     = get_env_var("MYSQLUSER", "MYSQL_USER", "root");
+    const char *pass     = get_env_var("MYSQLPASSWORD", "MYSQL_PASSWORD", "");
+    const char *db       = get_env_var("MYSQLDATABASE", "MYSQL_DATABASE", "railway");
+    const char *port_str = get_env_var("MYSQLPORT", "MYSQL_PORT", "3306");
+    unsigned int port    = (unsigned int) atoi(port_str);
 
-    // Retrieve Railway Environment Variables
-    const char *host = get_db_env("MYSQLHOST", "MYSQL_HOST");
-    const char *user = get_db_env("MYSQLUSER", "MYSQL_USER");
-    const char *password = get_db_env("MYSQLPASSWORD", "MYSQL_PASSWORD");
-    const char *database = get_db_env("MYSQLDATABASE", "MYSQL_DATABASE");
-    const char *port_str = get_db_env("MYSQLPORT", "MYSQL_PORT");
-
-    if (host == NULL) {
-        printf("[CRITICAL ERROR] MYSQLHOST is missing or empty in Environment Variables!\n");
-        return 0;
-    }
-
-    unsigned int port = port_str ? (unsigned int)atoi(port_str) : 3306;
-
-    printf("[DB CONNECTING] Host: %s | Port: %u | User: %s | DB: %s\n",
-           host, port, user ? user : "(none)", database ? database : "(none)");
-
-    conn = mysql_init(NULL);
+    MYSQL *conn = mysql_init(NULL);
     if (conn == NULL) {
-        printf("[CRITICAL ERROR] mysql_init failed (Out of memory?)\n");
-        return 0;
+        fprintf(stderr, "[DB ERROR] mysql_init() failed\n");
+        return NULL;
     }
 
-    // Set connection timeout (5 seconds max waiting for DB response)
-    unsigned int timeout = 5;
-    mysql_options(conn, MYSQL_OPT_CONNECT_TIMEOUT, &timeout);
+    // Force TCP Protocol for network connections on Railway (prevents Unix socket lookup error)
+    unsigned int protocol = MYSQL_PROTOCOL_TCP;
+    mysql_options(conn, MYSQL_OPT_PROTOCOL, &protocol);
 
-    // Enable Automatic Reconnection in C Client Library
-    my_bool reconnect = 1;
-    mysql_options(conn, MYSQL_OPT_RECONNECT, &reconnect);
-
-    // CRITICAL FIX FOR SOCKET ERROR: Force TCP connection over Unix Socket if localhost
-    if (strcmp(host, "localhost") == 0 || strcmp(host, "127.0.0.1") == 0) {
-        enum mysql_protocol_type prot = MYSQL_PROTOCOL_TCP;
-        mysql_options(conn, MYSQL_OPT_PROTOCOL, &prot);
-    }
-
-    // Connect to Remote MySQL DB
-    if (mysql_real_connect(conn, host, user, password, database, port, NULL, 0) == NULL) {
-        printf("[CRITICAL ERROR] MySQL connection failed: %s\n", mysql_error(conn));
+    // Attempt MySQL connection
+    if (mysql_real_connect(conn, host, user, pass, db, port, NULL, 0) == NULL) {
+        fprintf(stderr, "[DB ERROR] mysql_real_connect failed: %s\n", mysql_error(conn));
         mysql_close(conn);
-        conn = NULL;
-        return 0;
+        return NULL;
     }
 
-    printf("[DB SUCCESS] MySQL Connected and Ready!\n");
-    return 1;
+    return conn;
 }
 
-static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
+// HTTP Event Handler
+static void fn(struct mg_connection *c, int ev, void *ev_data) {
     if (ev == MG_EV_HTTP_MSG) {
-        struct mg_http_message *hm = (struct mg_http_message *)ev_data;
+        struct mg_http_message *hm = (struct mg_http_message *) ev_data;
 
-        // Route: GET /
-        if (mg_match(hm->uri, mg_str("/"), NULL)) {
-            struct mg_http_serve_opts opts = {0};
-            mg_http_serve_file(c, hm, "index.html", &opts);
-        }
-        // Route: POST /search or GET /search
-        else if (mg_match(hm->uri, mg_str("/search"), NULL)) {
-            char location_val[100] = {0};
-            char emergency_val[100] = {0};
-            char query[512];
+        // Route: POST /search
+        if (mg_match(hm->uri, mg_str("/search"), NULL) && mg_vcasecmp(&hm->method, mg_str("POST")) == 0) {
+            
+            // Extract 'query' parameter from HTTP POST body
+            char query_param[256] = {0};
+            mg_http_get_var(&hm->body, "query", query_param, sizeof(query_param));
 
-            mg_http_get_var(&hm->body, "location", location_val, sizeof(location_val));
-            mg_http_get_var(&hm->body, "emergency", emergency_val, sizeof(emergency_val));
-
-            // Ensure DB Connection is active BEFORE running query
-            if (!ensure_mysql_connection()) {
-                const char *err_msg = conn ? mysql_error(conn) : "Failed to establish MySQL connection. Check Environment Variables.";
-                mg_http_reply(c, 500, "Content-Type: text/html\r\n",
-                              "<html><body><h2>Database Connection Error</h2><p>%s</p></body></html>",
-                              err_msg);
+            // Connect to MySQL
+            MYSQL *conn = connect_db();
+            if (conn == NULL) {
+                mg_http_reply(c, 500, "Content-Type: application/json\r\n", "{\"error\": \"Database Connection Failed\"}");
                 return;
             }
 
-            // Safe Query Formatting
-            snprintf(query, sizeof(query),
-                     "SELECT * FROM responders "
-                     "WHERE location LIKE '%%%s%%' "
-                     "AND type LIKE '%%%s%%'",
-                     location_val, emergency_val);
+            // Escape user input to prevent SQL Injection
+            char escaped_query[512] = {0};
+            mysql_real_escape_string(conn, escaped_query, query_param, strlen(query_param));
 
-            // Execute Query
-            if (mysql_query(conn, query) != 0) {
-                mg_http_reply(c, 500, "Content-Type: text/html\r\n",
-                              "<html><body><h2>Database Query Error</h2><p>%s</p></body></html>",
-                              mysql_error(conn));
+            // Build SQL Query
+            char sql_query[1024];
+            snprintf(sql_query, sizeof(sql_query), "SELECT * FROM search_items WHERE name LIKE '%%%s%%'", escaped_query);
+
+            if (mysql_query(conn, sql_query)) {
+                fprintf(stderr, "[DB ERROR] Query failed: %s\n", mysql_error(conn));
+                mg_http_reply(c, 500, "Content-Type: application/json\r\n", "{\"error\": \"Database Query Failed\"}");
+                mysql_close(conn);
                 return;
             }
 
             MYSQL_RES *result = mysql_store_result(conn);
             if (result == NULL) {
-                mg_http_reply(c, 500, "Content-Type: text/html\r\n",
-                              "<html><body><h2>Database Fetch Error</h2><p>%s</p></body></html>",
-                              mysql_error(conn));
+                fprintf(stderr, "[DB ERROR] mysql_store_result failed: %s\n", mysql_error(conn));
+                mg_http_reply(c, 500, "Content-Type: application/json\r\n", "{\"error\": \"Failed to retrieve query results\"}");
+                mysql_close(conn);
                 return;
             }
 
-            // Send standard HTTP response header
-            mg_printf(c,
-                      "HTTP/1.1 200 OK\r\n"
-                      "Content-Type: text/html\r\n"
-                      "Transfer-Encoding: chunked\r\n"
-                      "\r\n");
-
-            mg_http_printf_chunk(c,
-                                 "<!DOCTYPE html><html><head><title>Emergency Responders</title></head><body>"
-                                 "<h1>Emergency Responders Results</h1>"
-                                 "<a href=\"/\">&larr; Back to Search</a><br><br><hr>");
-
+            // Construct JSON response from MySQL result rows
+            char json_response[4096] = "{\"results\": [";
             MYSQL_ROW row;
-            if (mysql_num_rows(result) == 0) {
-                mg_http_printf_chunk(c, "<h3>No matching responders found for your search.</h3>");
-            } else {
-                while ((row = mysql_fetch_row(result)) != NULL) {
-                    mg_http_printf_chunk(c,
-                                         "<p>"
-                                         "<b>ID:</b> %s<br>"
-                                         "<b>Name:</b> %s<br>"
-                                         "<b>Type:</b> %s<br>"
-                                         "<b>Location:</b> %s<br>"
-                                         "<b>Phone:</b> %s"
-                                         "</p><hr>",
-                                         row[0] ? row[0] : "-",
-                                         row[1] ? row[1] : "-",
-                                         row[2] ? row[2] : "-",
-                                         row[3] ? row[3] : "-",
-                                         row[4] ? row[4] : "-");
+            int first = 1;
+
+            while ((row = mysql_fetch_row(result))) {
+                if (!first) {
+                    strcat(json_response, ",");
                 }
+                first = 0;
+
+                char item_buf[512];
+                snprintf(item_buf, sizeof(item_buf), "{\"id\":\"%s\",\"name\":\"%s\"}", 
+                         row[0] ? row[0] : "", 
+                         row[1] ? row[1] : "");
+                strcat(json_response, item_buf);
             }
+            strcat(json_response, "]}");
 
-            mg_http_printf_chunk(c, "</body></html>");
-            mg_http_printf_chunk(c, ""); // End chunked response
-
+            // Clean up MySQL pointers
             mysql_free_result(result);
+            mysql_close(conn);
+
+            // Send successful JSON HTTP response
+            mg_http_reply(c, 200, "Content-Type: application/json\r\n", "%s", json_response);
+        } else {
+            // Serve static files or fallback
+            struct mg_http_serve_opts opts = {.root_dir = "."};
+            mg_http_serve_dir(c, hm, &opts);
         }
     }
 }
 
 int main(void) {
-    printf("[STARTUP] Initializing Mongoose Server...\n");
-
-    // Pre-flight initial connection test
-    ensure_mysql_connection();
-
     struct mg_mgr mgr;
     mg_mgr_init(&mgr);
 
-    const char *railway_port = getenv("PORT");
-    char address[100];
-    snprintf(address, sizeof(address), "http://0.0.0.0:%s", railway_port ? railway_port : "8080");
+    const char *port = getenv("PORT") ? getenv("PORT") : "8080";
+    char listen_address[64];
+    snprintf(listen_address, sizeof(listen_address), "http://0.0.0.0:%s", port);
 
-    printf("[SERVER] Binding web server to %s\n", address);
+    printf("[SERVER START] Listening on %s\n", listen_address);
+    fflush(stdout);
 
-    if (mg_http_listen(&mgr, address, ev_handler, NULL) == NULL) {
-        printf("[FATAL] Failed to listen on %s\n", address);
-        return 1;
-    }
+    mg_http_listen(&mgr, listen_address, fn, NULL);
 
-    // Main event loop
     for (;;) {
         mg_mgr_poll(&mgr, 1000);
     }
 
     mg_mgr_free(&mgr);
-    if (conn) {
-        mysql_close(conn);
-    }
-
     return 0;
 }
